@@ -7,10 +7,13 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/apache/openwhisk-wskdeploy/cmd"
+	"github.com/apache/openwhisk-wskdeploy/utils"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
@@ -47,7 +50,7 @@ type manifestYaml struct {
 
 var mux sync.Mutex
 
-func destroyFunction(name string) {
+func destroyFunction(name string) error {
 	mux.Lock()
 	defer mux.Unlock()
 	env := make(map[string]string)
@@ -55,10 +58,12 @@ func destroyFunction(name string) {
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	ioutil.WriteFile("smallest.zip", smallestZip, 0644)
 	defer os.Remove("smallest.zip")
-	act := action{Function: "smallest.zip",
-		Runtime: "nodejs:10",
-		Web:     "yes",
-		Inputs:  env,
+
+	act := action{
+		Function: "smallest.zip",
+		Runtime:  "nodejs:10",
+		Web:      "yes",
+		Inputs:   env,
 	}
 	manifest := manifestYaml{}
 
@@ -67,10 +72,10 @@ func destroyFunction(name string) {
 	data, _ := yaml.Marshal(manifest)
 	ioutil.WriteFile("manifest.yml", data, 0644)
 	defer os.Remove("manifest.yml")
-	cmd.Undeploy(&cobra.Command{})
+	return cmd.Undeploy(&cobra.Command{})
 }
 
-func deployFunction(zipPath string, name string, environment map[string]interface{}) {
+func deployFunction(zipPath string, name string, environment map[string]interface{}) error {
 	mux.Lock()
 	defer mux.Unlock()
 
@@ -79,19 +84,25 @@ func deployFunction(zipPath string, name string, environment map[string]interfac
 		prefixedEnv["__env_"+k] = v.(string)
 	}
 
-	act := action{Function: zipPath,
-		Runtime: "nodejs:10",
-		Web:     "yes",
-		Inputs:  prefixedEnv,
+	zipDir := filepath.Dir(zipPath)
+	zipName := filepath.Base(zipPath)
+
+	act := action{
+		Function: zipName,
+		Runtime:  "nodejs:10",
+		Web:      "yes",
+		Inputs:   prefixedEnv,
 	}
 	manifest := manifestYaml{}
-
 	manifest.Packages.Faastermetrics.Actions = make(map[string]action)
 	manifest.Packages.Faastermetrics.Actions[name] = act
 	data, _ := yaml.Marshal(manifest)
-	ioutil.WriteFile("manifest.yml", data, 0644)
-	defer os.Remove("manifest.yml")
-	cmd.Deploy(&cobra.Command{})
+	manifestFile := path.Join(zipDir, "manifest.yml")
+	ioutil.WriteFile(manifestFile, data, 0644)
+	defer os.Remove(manifestFile)
+
+	utils.Flags.ManifestPath = manifestFile
+	return cmd.Deploy(&cobra.Command{})
 }
 
 //TODO
@@ -99,7 +110,9 @@ func resourceServerCreate(d *schema.ResourceData, m interface{}) error {
 	name := d.Get("name").(string)
 	zipPath := d.Get("zip_path").(string)
 	environment := d.Get("environment").(map[string]interface{})
-	deployFunction(zipPath, name, environment)
+	if err := deployFunction(zipPath, name, environment); err != nil {
+		return err
+	}
 	d.SetId(name + ":" + hashFile(zipPath))
 
 	return resourceServerRead(d, m)
@@ -123,9 +136,13 @@ func resourceServerUpdate(d *schema.ResourceData, m interface{}) error {
 	zipPath := d.Get("zip_path").(string)
 	environment := d.Get("environment").(map[string]interface{})
 	id := d.Id()
-	destroyFunction(strings.Split(id, ":")[0])
+	if err := destroyFunction(strings.Split(id, ":")[0]); err != nil {
+		return err
+	}
 
-	deployFunction(zipPath, name, environment)
+	if err := deployFunction(zipPath, name, environment); err != nil {
+		return err
+	}
 	d.SetId(name + ":" + hashFile(zipPath))
 
 	return resourceServerRead(d, m)

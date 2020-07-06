@@ -1,10 +1,15 @@
 #!/bin/bash
+
+set -euo pipefail
+
 go build -o terraform-provider-openwhisk .
 
-rm out.zip 2>/dev/null
+rm -f example/build/out.zip
 cd example
-zip -r ../out.zip *
-cd ..
+npm run build
+cd build
+zip -r out.zip *
+cd ../../
 
 terraform init
 terraform apply
