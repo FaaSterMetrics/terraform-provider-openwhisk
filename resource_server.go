@@ -31,10 +31,10 @@ func hashFile(path string) string {
 }
 
 type action struct {
-	Function string                 `yaml:"function"`
-	Runtime  string                 `yaml:"runtime"`
-	Web      string                 `yaml:"web"`
-	Inputs   map[string]interface{} `yaml:"inputs"`
+	Function string            `yaml:"function"`
+	Runtime  string            `yaml:"runtime"`
+	Web      string            `yaml:"web"`
+	Inputs   map[string]string `yaml:"inputs"`
 }
 
 type manifestYaml struct {
@@ -50,7 +50,7 @@ var mux sync.Mutex
 func destroyFunction(name string) {
 	mux.Lock()
 	defer mux.Unlock()
-	env := make(map[string]interface{})
+	env := make(map[string]string)
 	smallestZip := []byte{0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	ioutil.WriteFile("smallest.zip", smallestZip, 0644)
@@ -74,10 +74,15 @@ func deployFunction(zipPath string, name string, environment map[string]interfac
 	mux.Lock()
 	defer mux.Unlock()
 
+	prefixedEnv := make(map[string]string)
+	for k, v := range environment {
+		prefixedEnv["__env_"+k] = v.(string)
+	}
+
 	act := action{Function: zipPath,
 		Runtime: "nodejs:10",
 		Web:     "yes",
-		Inputs:  environment,
+		Inputs:  prefixedEnv,
 	}
 	manifest := manifestYaml{}
 
