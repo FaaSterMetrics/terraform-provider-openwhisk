@@ -1,0 +1,19 @@
+{
+  "name": "example",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "dependencies": {
+    "@faastermetrics/lib": "^8.2.0"
+  },
+  "devDependencies": {
+    "@zeit/ncc": "^0.22.3",
+    "standard": "^14.3.4"
+  },
+  "scripts": {
+    "test": "standard",
+    "build": "rm -rf build && ncc build ow.js -o build && cp package.json build/"
+  },
+  "author": "",
+  "license": "ISC"
+}

@@ -1,15 +1,9 @@
-/*
- * http://localhost:3233/api/v1/web/guest/faastermetrics/ENDPOINT_NAME
-*/
+const lib = require('@faastermetrics/lib')
+const path = require('path')
+const fs = require('fs')
 
-const fs = require('fs'); 
-
-
-function main(args) {
-    process.env = {...process.env, ...args}; 
-    var blubb = fs.readFileSync("file.txt", "utf8");
-    return {body: blubb + process.env.testvar}
-
-}
-
-exports.main = main;
+module.exports = lib.serverless.rpcHandler( event => ({
+  ok: true,
+  file: fs.readFileSync(path.join(__dirname, 'file.txt'), 'utf8'),
+  event
+}))
