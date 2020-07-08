@@ -34,7 +34,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           ghr: true
-      - run: gox -parallel 4 -osarch="linux/amd64 darwin/amd64 linux/arm linux/arm64 windows/amd64" -ldflags="-extldflags '-static' -s -w" -output="bin/{{.Dir}}_v"${{steps.semrel.outputs.version}}"_{{.OS}}_{{.Arch}}" .
+      - run: |
+          gox -parallel 2 -osarch="linux/amd64 darwin/amd64 linux/arm linux/arm64 windows/amd64" -ldflags="-extldflags '-static' -s -w" -output="bin/{{.Dir}}_v${{steps.semrel.outputs.version}}_{{.OS}}_{{.Arch}}" .
+          rename.ul amd64 x86_64 bin/*amd64
         if: steps.semrel.outputs.version != ''
       - run: ghr $(cat .ghr) bin/
         if: steps.semrel.outputs.version != ''
