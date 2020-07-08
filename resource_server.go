@@ -2,21 +2,16 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"path"
-	"path/filepath"
 	"strings"
-	"sync"
 
-	"github.com/apache/openwhisk-wskdeploy/cmd"
-	"github.com/apache/openwhisk-wskdeploy/utils"
+	"github.com/apache/openwhisk-client-go/whisk"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
-	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v2"
 )
 
 func hashFile(path string) string {
@@ -33,149 +28,141 @@ func hashFile(path string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-type action struct {
-	Function string            `yaml:"function"`
-	Runtime  string            `yaml:"runtime"`
-	Web      string            `yaml:"web"`
-	Inputs   map[string]string `yaml:"inputs"`
-}
+const ENV_PREFIX = "__env_"
 
-type manifestYaml struct {
-	Packages struct {
-		Faastermetrics struct {
-			Actions map[string]action `yaml:"actions"`
-		} `yaml:"faastermetrics"`
-	} `yaml:"packages"`
-}
+func environmentToParams(d *schema.ResourceData) whisk.KeyValueArr {
+	params := make(whisk.KeyValueArr, 0)
+	var environment map[string]interface{}
 
-var mux sync.Mutex
-
-func destroyFunction(name string) error {
-	mux.Lock()
-	defer mux.Unlock()
-	env := make(map[string]string)
-	smallestZip := []byte{0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	ioutil.WriteFile("smallest.zip", smallestZip, 0644)
-	defer os.Remove("smallest.zip")
-
-	act := action{
-		Function: "smallest.zip",
-		Runtime:  "nodejs:10",
-		Web:      "yes",
-		Inputs:   env,
+	if v, ok := d.GetOk("environment"); ok {
+		environment = v.(map[string]interface{})
+	} else {
+		return params
 	}
-	manifest := manifestYaml{}
 
-	manifest.Packages.Faastermetrics.Actions = make(map[string]action)
-	manifest.Packages.Faastermetrics.Actions[name] = act
-	data, _ := yaml.Marshal(manifest)
-	ioutil.WriteFile("manifest.yml", data, 0644)
-	defer os.Remove("manifest.yml")
-	return cmd.Undeploy(&cobra.Command{})
-}
-
-func deployFunction(zipPath string, name string, environment map[string]interface{}) error {
-	mux.Lock()
-	defer mux.Unlock()
-
-	prefixedEnv := make(map[string]string)
 	for k, v := range environment {
-		prefixedEnv["__env_"+k] = v.(string)
+		params = params.AddOrReplace(&whisk.KeyValue{
+			Key:   ENV_PREFIX + k,
+			Value: v.(string),
+		})
 	}
-
-	zipDir := filepath.Dir(zipPath)
-	zipName := filepath.Base(zipPath)
-
-	act := action{
-		Function: zipName,
-		Runtime:  "nodejs:10",
-		Web:      "yes",
-		Inputs:   prefixedEnv,
-	}
-	manifest := manifestYaml{}
-	manifest.Packages.Faastermetrics.Actions = make(map[string]action)
-	manifest.Packages.Faastermetrics.Actions[name] = act
-	data, _ := yaml.Marshal(manifest)
-	manifestFile := path.Join(zipDir, "manifest.yml")
-	ioutil.WriteFile(manifestFile, data, 0644)
-	defer os.Remove(manifestFile)
-
-	utils.Flags.ManifestPath = manifestFile
-	return cmd.Deploy(&cobra.Command{})
+	return params
 }
 
-//TODO
+func paramsToEnvironment(params whisk.KeyValueArr) map[string]string {
+	environment := make(map[string]string)
+	for _, v := range params {
+		if strings.HasPrefix(v.Key, ENV_PREFIX) {
+			environment[strings.Replace(v.Key, ENV_PREFIX, "", 1)] = v.Value.(string)
+		}
+	}
+	return environment
+}
+
 func resourceServerCreate(d *schema.ResourceData, m interface{}) error {
 	name := d.Get("name").(string)
-	zipPath := d.Get("zip_path").(string)
-	environment := d.Get("environment").(map[string]interface{})
-	if err := deployFunction(zipPath, name, environment); err != nil {
+	source := d.Get("source").(string)
+	client := m.(*whisk.Client)
+
+	code, err := ioutil.ReadFile(source)
+	if err != nil {
 		return err
 	}
-	d.SetId(name + ":" + hashFile(zipPath))
 
-	return resourceServerRead(d, m)
+	codeStr := base64.StdEncoding.EncodeToString(code)
+	action := &whisk.Action{
+		Name: name,
+		Annotations: whisk.KeyValueArr{
+			{Key: "web-export", Value: true},
+			{Key: "raw-http", Value: false},
+			{Key: "final", Value: true},
+			{Key: "provide-api-key", Value: false},
+		},
+		Exec: &whisk.Exec{
+			Kind: "nodejs:10",
+			Code: &codeStr,
+		},
+		Parameters: environmentToParams(d),
+	}
+
+	resAction, _, err := client.Actions.Insert(action, false)
+	if err != nil {
+		return err
+	}
+
+	d.SetId(resAction.Name)
+	return nil
 }
 
 func resourceServerRead(d *schema.ResourceData, m interface{}) error {
-	name := d.Get("name").(string)
-	zipPath := d.Get("zip_path").(string)
-	hash := hashFile(zipPath)
-	if name+":"+hash != d.Id() {
+	id := d.Id()
+	client := m.(*whisk.Client)
+	action, _, err := client.Actions.Get(id, false)
+	if err != nil && strings.Contains(err.Error(), "The requested resource does not exist") {
 		d.SetId("")
-	} else {
-		d.SetId(name + ":" + hash)
+		return nil
 	}
-
+	if err != nil {
+		return err
+	}
+	d.Set("environment", paramsToEnvironment(action.Parameters))
 	return nil
 }
 
 func resourceServerUpdate(d *schema.ResourceData, m interface{}) error {
-	name := d.Get("name").(string)
-	zipPath := d.Get("zip_path").(string)
-	environment := d.Get("environment").(map[string]interface{})
 	id := d.Id()
-	if err := destroyFunction(strings.Split(id, ":")[0]); err != nil {
-		return err
+	client := m.(*whisk.Client)
+	if d.HasChange("environment") {
+		_, _, err := client.Actions.Insert(&whisk.Action{
+			Name:       id,
+			Parameters: environmentToParams(d),
+		}, true)
+		if err != nil {
+			return err
+		}
 	}
-
-	if err := deployFunction(zipPath, name, environment); err != nil {
-		return err
-	}
-	d.SetId(name + ":" + hashFile(zipPath))
-
 	return resourceServerRead(d, m)
 }
 
-//TODO
 func resourceServerDelete(d *schema.ResourceData, m interface{}) error {
-	name := d.Get("name").(string)
-	destroyFunction(name)
-	d.SetId("")
+	id := d.Id()
+	client := m.(*whisk.Client)
+	_, err := client.Actions.Delete(id)
+	return err
+}
+
+func customDiff(d *schema.ResourceDiff, m interface{}) error {
+	d.SetNew("source_hash", hashFile(d.Get("source").(string)))
 	return nil
 }
 
-//TODO
 func resourceServer() *schema.Resource {
 	return &schema.Resource{
-		Create: resourceServerCreate,
-		Read:   resourceServerRead,
-		Update: resourceServerUpdate,
-		Delete: resourceServerDelete,
+		Create:        resourceServerCreate,
+		Read:          resourceServerRead,
+		Update:        resourceServerUpdate,
+		Delete:        resourceServerDelete,
+		CustomizeDiff: customDiff,
 
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				ForceNew: true,
 			},
-			"zip_path": &schema.Schema{
+			"source": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 			},
+			"source_hash": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+				ForceNew: true,
+			},
 			"environment": &schema.Schema{
 				Type:     schema.TypeMap,
-				Required: true,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 		},
 	}

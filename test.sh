@@ -11,5 +11,8 @@ cd build
 zip -r out.zip *
 cd ../../
 
+sha256sum example/build/out.zip
+
 terraform init
+export TF_LOG="DEBUG"
 terraform apply
