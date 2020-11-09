@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - uses: actions/setup-go@v2
         with:
           go-version: 1.14
       - run: go build
@@ -21,10 +21,9 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - uses: actions/setup-go@v2
         with:
           go-version: 1.14
-      - run: echo "::add-path::~/go/bin"
       - name: Get release dependencies
         run: |
           go get github.com/mitchellh/gox
